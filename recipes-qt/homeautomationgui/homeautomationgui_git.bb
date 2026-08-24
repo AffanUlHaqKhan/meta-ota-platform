@@ -15,11 +15,11 @@ SRC_URI = "git://github.com/AffanUlHaqKhan/HomeAutomationGUI.git;protocol=https;
 
 # Pin for releases. AUTOREV breaks reproducibility, which breaks small OSTree deltas.
 SRCREV = "fce2acb8e312443d84df4f3f82a1498a5880d015"
-PV = "1.0+git${SRCPV}"
+PV = "1.0+git${SRCREV}"
 
 S = "${WORKDIR}/git"
 
-inherit cmake_qt6 systemd
+inherit qt6-cmake systemd
 
 EXTRA_OECMAKE = "-DCMAKE_BUILD_TYPE=Release"
 

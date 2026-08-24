@@ -7,9 +7,16 @@ inherit core-image
 
 IMAGE_FEATURES += "ssh-server-openssh"
 
+# ota-agent is gated: its repo has no source yet, so a first bring-up image is
+# built without it to prove the OSTree pipeline end to end. Set
+# OTA_AGENT_ENABLED = "1" in local.conf once the repo is pushed and its SRCREV
+# pinned. Without the agent the device can be updated manually with
+# `ostree admin deploy`, which is exactly what step 3 of the bring-up verifies.
+OTA_AGENT_ENABLED ?= "0"
+
 IMAGE_INSTALL:append = " \
     homeautomationgui \
-    ota-agent \
+    ${@bb.utils.contains('OTA_AGENT_ENABLED', '1', 'ota-agent', '', d)} \
     ostree \
     ca-certificates \
     openssl \

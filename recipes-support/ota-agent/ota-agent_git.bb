@@ -7,8 +7,14 @@ DEPENDS = "ostree curl openssl"
 RDEPENDS:${PN} = "ostree curl ca-certificates"
 
 SRC_URI = "git://github.com/<you>/ota-agent.git;protocol=https;branch=main"
-SRCREV = "${AUTOREV}"
-PV = "0.1+git${SRCPV}"
+
+# Never use ${AUTOREV} here. bitbake resolves it with a `git ls-remote` at PARSE
+# time, so an unreachable or placeholder URL halts parsing of the entire tree:
+#   ExpansionError ... Fetcher failure ... failed with exit code 128
+# Pin a real commit once the repo is pushed. Pinning is required for
+# reproducibility anyway, and reproducibility is what keeps OSTree deltas small.
+SRCREV = "0000000000000000000000000000000000000000"
+PV = "0.1+git"
 
 S = "${WORKDIR}/git"
 

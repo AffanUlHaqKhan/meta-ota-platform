@@ -31,18 +31,32 @@ Every constraint the other repos live under traces back to this list.
 | Layer | Source | Purpose |
 |---|---|---|
 | `poky` (meta, meta-poky, meta-yocto-bsp) | `https://git.yoctoproject.org/poky` | base build system |
-| `meta-openembedded` (meta-oe, meta-python, meta-networking) | `https://git.openembedded.org/meta-openembedded` | common dependencies |
+| `meta-openembedded` (meta-oe, meta-python, meta-networking, **meta-filesystems**) | `https://git.openembedded.org/meta-openembedded` | common dependencies; `meta-filesystems` is a hard dependency of `sota`, not optional |
 | `meta-qt6` | `https://code.qt.io/yocto/meta-qt6.git` | QT 6 |
 | `meta-updater` (layer name `sota`) | `https://github.com/uptane/meta-updater` | OSTree recipes, `image_types_ostree` / `image_types_ota` bbclasses, OSTree-aware wic partitioning, u-boot integration |
 | BSP layer | vendor (`meta-raspberrypi`, `meta-ti`, `meta-freescale`, …) | board support |
 
 Pin every layer to the same release branch. `scarthgap` (5.0 LTS) is the default in the
-scaffold — see `DECISIONS.md` D3, because vendor BSPs often lag the LTS.
+scaffold, and here it is a **ceiling, not a preference**: `meta-updater` declares
+`LAYERSERIES_COMPAT_sota = "nanbield scarthgap"` and `meta-raspberrypi` the same. Moving to a
+newer Yocto release means those two layers must gain support first. `meta-qt6` is compatible
+much further out (kirkstone → whinlatter), so it is not the constraint. See `DECISIONS.md` D3.
 
-> **On meta-updater**: it ships OSTree *and* aktualizr (the Uptane client). This layer uses the
-> OSTree half only — `ota-agent` replaces aktualizr. `conf/ota.conf` has the knobs that keep
-> aktualizr out. If you later decide to use aktualizr instead (`DECISIONS.md` D1), reverse
-> those three lines and delete `ota-agent`.
+Layer dependencies are declared, so `bitbake-layers add-layer` refuses the whole set if one is
+missing rather than failing later — `ERROR: Layer 'sota' depends on layer 'filesystems-layer',
+but this layer is not enabled` means exactly what it says. Verify the result with
+`bitbake-layers show-layers`; the expected list is 11 layers, `ota-platform` last at
+priority 10.
+
+> **On meta-updater**: adding the layer and the `sota` `DISTRO_FEATURE` does nothing on its
+> own — its `conf/layer.conf` never inherits `sota.bbclass`. `conf/ota.conf` carries the
+> `INHERIT += "sota"` that actually activates OSTree image types, the OSTree-aware `.wks` and
+> the u-boot wiring.
+>
+> It ships OSTree *and* aktualizr (the Uptane client). This layer uses the OSTree half only —
+> `ota-agent` replaces aktualizr — so `conf/ota.conf` also strips the image types that pull in
+> `aktualizr-native` and `garage-sign`. If you later adopt aktualizr instead
+> (`DECISIONS.md` D1), drop those `:remove` lines and delete `ota-agent`.
 >
 > Use the `uptane/meta-updater` repo. The older `advancedtelematic/meta-updater` is dead.
 
@@ -59,7 +73,9 @@ git clone -b scarthgap https://git.openembedded.org/meta-openembedded
 git clone -b 6.8       https://code.qt.io/yocto/meta-qt6.git
 git clone -b scarthgap https://github.com/uptane/meta-updater
 git clone -b scarthgap https://github.com/agherzan/meta-raspberrypi   # or your BSP
-git clone <this-repo>  meta-ota-platform
+# Symlink, do not copy. A copy silently becomes a second source of truth and you
+# end up debugging edits that bitbake never sees.
+ln -s /path/to/meta-ota-platform meta-ota-platform
 
 source poky/oe-init-build-env build
 
@@ -67,6 +83,7 @@ bitbake-layers add-layer \
   ../meta-openembedded/meta-oe \
   ../meta-openembedded/meta-python \
   ../meta-openembedded/meta-networking \
+  ../meta-openembedded/meta-filesystems \
   ../meta-qt6 \
   ../meta-updater \
   ../meta-raspberrypi \
@@ -75,8 +92,23 @@ bitbake-layers add-layer \
 cat ../meta-ota-platform/conf/ota.conf >> conf/local.conf
 # edit conf/local.conf: MACHINE, OSTREE_REMOTE_URL, SSTATE_DIR, DL_DIR
 
+bitbake -p          # parse only -- catches config errors in ~1 min instead of 4 h
 bitbake ota-image
 ```
+
+Always `bitbake -p` after touching `local.conf` or a recipe. Config mistakes here surface as
+parse errors across hundreds of unrelated recipes, and finding that out an hour into a build is
+the expensive way to learn it.
+
+Verify the OSTree wiring took effect before building:
+
+```bash
+bitbake -e ota-image | grep -E '^(IMAGE_FSTYPES|OSTREE_BRANCHNAME|OSTREE_OSNAME|OSTREE_BOOTLOADER|WKS_FILE)='
+```
+
+Expected: `ota-ext4` and `ostree.tar.bz2` present, `ostreepush`/`garagesign`/`garagecheck`
+absent, `WKS_FILE=sdimage-sota.wks`, `OSTREE_BOOTLOADER=u-boot`. If `WKS_FILE` is the board
+default instead, `INHERIT += "sota"` is missing and nothing OSTree-related is active.
 
 First build is hours. Every build after that should be minutes if `SSTATE_DIR` and `DL_DIR`
 are on persistent storage — set them outside `build/` and share them with CI.
@@ -117,7 +149,7 @@ to revisit.
 | `OSTREE_REPO` | local repo bitbake commits into | lives in `DEPLOY_DIR_IMAGE`; CI pushes from here |
 | `OSTREE_REMOTE_URL` | baked into the agent config as its default remote | must be reachable from the device, not from your laptop |
 | `SOTA_CLIENT = ""` | keeps aktualizr out | reverse if adopting aktualizr |
-| `BUILD_REPRODUCIBLE_BINARIES` | stable commits across rebuilds | **load-bearing** — see below |
+| *(reproducibility)* | stable commits across rebuilds | **load-bearing**, but nothing to set — it is unconditional since kirkstone. See below |
 | `QT_HMI_PLATFORM` | `eglfs` / `wayland` / `linuxfb` | substituted into the HMI's systemd unit; must match the BSP's graphics stack |
 | `IMAGE_FSTYPES` | `wic.gz` for flashing, `ostreepush` for publishing | |
 
@@ -127,9 +159,17 @@ Two builds of identical source must produce identical OSTree objects. If they do
 build rewrites files that did not really change, static deltas balloon to near-full-image size,
 and the bandwidth argument for OSTree evaporates.
 
-Reproducibility killers to watch for: `SRCREV = "${AUTOREV}"`, timestamps baked into binaries,
-`__DATE__`/`__TIME__` in C++, build paths leaking into debug info, and non-deterministic file
-ordering in custom `do_install` steps.
+There is no switch to turn on. Since kirkstone, `base.bbclass` handles `SOURCE_DATE_EPOCH`
+unconditionally; `BUILD_REPRODUCIBLE_BINARIES` and `reproducible_build.bbclass` were both
+removed, and referencing either now aborts parsing:
+
+```
+ParseError in configuration INHERITs: Could not inherit file classes/reproducible_build.bbclass
+```
+
+The work is in not breaking it. Reproducibility killers to watch for: `SRCREV = "${AUTOREV}"`,
+timestamps baked into binaries, `__DATE__`/`__TIME__` in C++, build paths leaking into debug
+info, and non-deterministic file ordering in custom `do_install` steps.
 
 Pin `SRCREV` to a real commit hash for anything released.
 
@@ -246,6 +286,13 @@ by deliberately shipping a commit whose HMI unit fails to start.
 | Symptom | Cause |
 |---|---|
 | `Nothing PROVIDES 'homeautomationgui'` | layer not added, or recipe filename doesn't match `PN` |
+| `Layer 'sota' depends on layer 'filesystems-layer'` | add `meta-openembedded/meta-filesystems` |
+| `Could not inherit file classes/reproducible_build.bbclass` | class removed upstream; delete the `INHERIT` and `BUILD_REPRODUCIBLE_BINARIES` lines from `local.conf` |
+| `Could not inherit file classes/cmake_qt6.bbclass` | meta-qt6's class is `qt6-cmake` |
+| `No IMAGE_CMD defined for IMAGE_FSTYPES entry 'ostreepush'` on every image in every layer | `ostreepush` set globally in `local.conf`; it only exists under `sota.bbclass`. Remove it — `sota.bbclass` adds it itself |
+| `ExpansionError ... fetcher_hashes_dummyfunc ... git ls-remote ... exit code 128` | a recipe uses `SRCREV = "${AUTOREV}"` with an unreachable `SRC_URI`; `AUTOREV` hits the network at parse time. Pin the hash |
+| Edits to this layer have no effect | the layer in `bblayers.conf` is a *copy*, not your repo — symlink it |
+| `Layer ... is not compatible with the core layer` | a layer's branch does not match poky's — check `LAYERSERIES_COMPAT` in its `conf/layer.conf` |
 | `LIC_FILES_CHKSUM does not match` | expected on first build — copy the md5 bitbake prints |
 | `unable to connect to git.yoctoproject.org: errno=Connection timed out` | port 9418 blocked — use https and set `url."https://".insteadOf git://` |
 | Fetch failure hours into a build, one recipe only | that recipe's upstream host is down or blocked — enable the `PREMIRRORS` block in `conf/ota.conf` |
