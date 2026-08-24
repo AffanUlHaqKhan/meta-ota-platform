@@ -1,5 +1,11 @@
 # Rollback design
 
+> **Board note (Raspberry Pi 5).** The u-boot section below describes the design this platform
+> wants. It does **not** apply to the Pi 5, which has no upstream u-boot support at all, so
+> there is no bootcount and no bootloader-level fallback. That board runs userspace-only
+> rollback — see [rpi5-boot.md](rpi5-boot.md) and `DECISIONS.md` D4. Keep this document as the
+> target design: it is what any future board with u-boot should use.
+
 OSTree gives atomic deploy + a previous deployment kept on disk. It does **not** decide when
 to roll back. That is bootloader + agent.
 
