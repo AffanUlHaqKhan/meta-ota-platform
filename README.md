@@ -113,6 +113,67 @@ default instead, `INHERIT += "sota"` is missing and nothing OSTree-related is ac
 First build is hours. Every build after that should be minutes if `SSTATE_DIR` and `DL_DIR`
 are on persistent storage — set them outside `build/` and share them with CI.
 
+### `User namespaces are not usable by BitBake` (Ubuntu 24.04+)
+
+bitbake uses a user namespace to isolate the network during builds, and checks up front that it
+works (`meta/classes-global/sanity.bbclass`). Ubuntu 24.04 ships
+`kernel.apparmor_restrict_unprivileged_userns=1`, which puts an unconfined process that creates
+a userns into the `unprivileged_userns` AppArmor profile — that profile denies `CAP_SYS_ADMIN`,
+so the `unshare()` succeeds but writing `uid_map` fails and the process is left as `nobody`.
+That is precisely the case the check detects.
+
+Confirm it is what you are hitting:
+
+```bash
+journalctl -k --since -10min | grep -i 'apparmor.*userns\|unprivileged_userns'
+```
+
+A `DENIED ... profile="unprivileged_userns" ... capability=21 capname="sys_admin"` line next to
+`comm="Cooker"` is this bug.
+
+Confusing wrinkle: it can *work* in some terminals and not others. A snap-packaged VS Code runs
+its integrated terminal under `snap.code.code`, which ships in **complain** mode, so userns is
+merely logged rather than denied. Builds that succeed there and fail in a plain terminal are
+showing you AppArmor confinement, not anything about your build tree. Do not rely on it — a
+snap update flipping that profile to enforce breaks it again.
+
+**A profile scoped to `bitbake` does not work, and it is worth understanding why.**
+`poky/bitbake/bin/bitbake` starts with `#!/usr/bin/env python3`, so the binary actually exec'd
+is `/usr/bin/python3.12`. AppArmor attaches profiles by the exec'd path, so a profile matching
+`poky/bitbake/bin/*` never applies. The `Cooker` process name in the audit log is cosmetic —
+`bb.utils.set_process_name()` changes `comm`, not the executable.
+
+That leaves two options, both needing root:
+
+```bash
+# Global toggle. Takes effect immediately, no reboot. Revert by setting it back to 1.
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-yocto.conf
+```
+
+```bash
+# Nominally scoped: grant userns to the Python interpreter.
+sudo tee /etc/apparmor.d/python3-userns >/dev/null <<'PROFILE'
+abi <abi/4.0>,
+include <tunables/global>
+profile python3-userns /usr/bin/python3.12 flags=(unconfined) {
+  userns,
+  include if exists <local/python3-userns>
+}
+PROFILE
+sudo apparmor_parser -r /etc/apparmor.d/python3-userns
+```
+
+The second looks tighter but is not by much: it grants unprivileged user namespaces to *every*
+Python script on the machine, which is the same interpreter most local exploit tooling would
+use anyway. It also breaks whenever Ubuntu bumps the Python minor version and the path changes.
+
+Understand what either one gives up. Ubuntu restricts unprivileged user namespaces because they
+are a recurring local privilege-escalation and sandbox-escape surface; disabling the restriction
+re-exposes that for the whole system, not just for builds. On a personal development machine
+that is usually an acceptable trade. On a shared or internet-facing host, it is not — put the
+build in a VM or container instead.
+
 ### Build host sizing
 
 `conf/ota.conf` caps `BB_NUMBER_THREADS` and `PARALLEL_MAKE` at 8 each. Do not remove those
@@ -301,6 +362,8 @@ by deliberately shipping a commit whose HMI unit fails to start.
 | `No IMAGE_CMD defined for IMAGE_FSTYPES entry 'ostreepush'` on every image in every layer | `ostreepush` set globally in `local.conf`; it only exists under `sota.bbclass`. Remove it — `sota.bbclass` adds it itself |
 | `ExpansionError ... fetcher_hashes_dummyfunc ... git ls-remote ... exit code 128` | a recipe uses `SRCREV = "${AUTOREV}"` with an unreachable `SRC_URI`; `AUTOREV` hits the network at parse time. Pin the hash |
 | Edits to this layer have no effect | the layer in `bblayers.conf` is a *copy*, not your repo — symlink it |
+| `User namespaces are not usable by BitBake, possibly due to AppArmor` | Ubuntu 24.04 userns restriction — see the section above. Note it may work in a snap VS Code terminal and fail elsewhere |
+| Build dies with disk-full, or `tmp` has eaten the partition | `tmp/` reaches ~100 GB. Put `SSTATE_DIR` and `DL_DIR` *outside* the build dir so `rm -rf tmp` costs minutes, not hours |
 | `undefined symbol: _ZTIN6icu_74...MeasureFormatE`, or any link error naming a symbol that obviously exists | OOM truncated object files to 0 bytes. `find <workdir> -name '*.o' -size 0` to confirm. Cap `BB_NUMBER_THREADS`/`PARALLEL_MAKE`, then `bitbake -c cleansstate <recipe>` — a plain retry relinks the same corrupt objects |
 | Random `do_compile` failures in different recipes each run | same cause: memory pressure. See the build-host section of `conf/ota.conf` |
 | `No rule to make target '.../overlays/uart0-rpi4.dtbo'` | meta-updater bug — `sota_raspberrypi.bbclass` names an overlay the RPi kernel no longer ships. Overridden in `conf/ota.conf` |
