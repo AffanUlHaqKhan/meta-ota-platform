@@ -113,6 +113,15 @@ default instead, `INHERIT += "sota"` is missing and nothing OSTree-related is ac
 First build is hours. Every build after that should be minutes if `SSTATE_DIR` and `DL_DIR`
 are on persistent storage — set them outside `build/` and share them with CI.
 
+### Build host sizing
+
+`conf/ota.conf` caps `BB_NUMBER_THREADS` and `PARALLEL_MAKE` at 8 each. Do not remove those
+lines to "speed things up": bitbake defaults both to `nproc`, and their product is the real
+process count — 24 cores means up to 576 concurrent compilers. Yocto runs out of RAM far
+before it runs out of CPU, and the failure mode is silent corruption rather than a clean error
+(see the failures table). Budget roughly 2 GB of RAM per parallel compile, and give the host
+real swap — a 1 GB swap partition on a 30 GB machine is not a safety net.
+
 ### If `git://` is blocked on your network
 
 Port 9418 is firewalled almost everywhere. Cloning over https fixes the clones above, but
@@ -292,6 +301,8 @@ by deliberately shipping a commit whose HMI unit fails to start.
 | `No IMAGE_CMD defined for IMAGE_FSTYPES entry 'ostreepush'` on every image in every layer | `ostreepush` set globally in `local.conf`; it only exists under `sota.bbclass`. Remove it — `sota.bbclass` adds it itself |
 | `ExpansionError ... fetcher_hashes_dummyfunc ... git ls-remote ... exit code 128` | a recipe uses `SRCREV = "${AUTOREV}"` with an unreachable `SRC_URI`; `AUTOREV` hits the network at parse time. Pin the hash |
 | Edits to this layer have no effect | the layer in `bblayers.conf` is a *copy*, not your repo — symlink it |
+| `undefined symbol: _ZTIN6icu_74...MeasureFormatE`, or any link error naming a symbol that obviously exists | OOM truncated object files to 0 bytes. `find <workdir> -name '*.o' -size 0` to confirm. Cap `BB_NUMBER_THREADS`/`PARALLEL_MAKE`, then `bitbake -c cleansstate <recipe>` — a plain retry relinks the same corrupt objects |
+| Random `do_compile` failures in different recipes each run | same cause: memory pressure. See the build-host section of `conf/ota.conf` |
 | `Layer ... is not compatible with the core layer` | a layer's branch does not match poky's — check `LAYERSERIES_COMPAT` in its `conf/layer.conf` |
 | `LIC_FILES_CHKSUM does not match` | expected on first build — copy the md5 bitbake prints |
 | `unable to connect to git.yoctoproject.org: errno=Connection timed out` | port 9418 blocked — use https and set `url."https://".insteadOf git://` |
