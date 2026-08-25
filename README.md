@@ -6,6 +6,12 @@ HomeAuto HMI (`HomeAutomationGUI`) and the OTA update client (`ota-agent`).
 This layer is the *build* half of the OTA system. The *serve* half is `ota-server`, the
 *apply* half is `ota-agent`.
 
+> **Board scope: Raspberry Pi 5 only.** `meta-ota-platform-rpi4` is the sibling layer for the
+> Pi 4. They ship recipes with the same names, so never add both to one build — use one build
+> directory per board. The Pi 4 layer is the simpler one: with upstream u-boot it needs none of
+> the custom bootloader machinery here (`classes/sota_raspberrypi5.bbclass`,
+> `ostree-boot-sync`, the generated `cmdline.txt`), and it gets real bootcount rollback.
+
 ---
 
 ## What "OSTree-managed" means here
