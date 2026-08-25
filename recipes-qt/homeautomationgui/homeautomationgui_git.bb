@@ -36,6 +36,12 @@ do_install:append() {
     sed -i -e 's|@QT_QPA_PLATFORM@|${QT_HMI_PLATFORM}|g' \
            ${D}${systemd_system_unitdir}/homeautomationgui.service
 
+    # Optional systemd drop-in for viewing the UI over VNC during bring-up.
+    # Shipped but NOT enabled -- copy it into
+    # /etc/systemd/system/homeautomationgui.service.d/ to activate.
+    install -d ${D}${datadir}/homeautomationgui
+    install -m 0644 ${WORKDIR}/vnc.conf ${D}${datadir}/homeautomationgui/
+
     # Writable state lives in /var — /usr is read-only under OSTree.
     install -d ${D}${localstatedir}/lib/homeautomationgui
 }
