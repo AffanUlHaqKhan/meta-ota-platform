@@ -42,9 +42,29 @@ SOTA_DT_OVERLAYS:raspberrypi5 = "vc4-kms-v3d-pi5.dtbo"
 # meta-updater's Pi class hardcodes bcm2708 framebuffer args and console=ttyS0,
 # both wrong for a Pi 5 (its debug UART is ttyAMA10, per raspberrypi5.conf).
 #
-# The ostree= karg is NOT set here. With sysroot.bootloader=none nothing
-# rewrites it automatically -- see docs/rpi5-boot.md.
-OSTREE_KERNEL_ARGS:sota ?= "console=ttyAMA10,115200 console=tty1 rootwait"
+# root= is required: the OSTree initramfs must mount the sysroot partition
+# before it can resolve the ostree= deployment path inside it. The ostree= karg
+# itself is appended by OSTree when it writes the boot loader entry -- it
+# contains a per-build checksum, so it cannot be hardcoded here.
+OSTREE_KERNEL_ARGS:sota ?= "root=/dev/mmcblk0p2 rootfstype=ext4 rootwait console=ttyAMA10,115200 console=tty1"
+
+# --- Firmware boot configuration --------------------------------------------
+# The Pi 5 EEPROM bootloader reads config.txt, so the OSTree initramfs has to be
+# named there or it is never loaded -- and without it nothing pivots into a
+# deployment. `followkernel` places it directly after the kernel in memory.
+RPI_EXTRA_CONFIG:append = "\n# OSTree: load the initramfs that pivots into the deployment\nkernel=kernel_2712.img\ninitramfs initramfs.img followkernel\n"
+
+# Boot partition additions, appended AFTER rpi-base.inc's defaults so that our
+# cmdline.txt overwrites the generic one from rpi-cmdline.bb.
+IMAGE_BOOT_FILES:append = " \
+    initramfs-ostree-image-${MACHINE}.cpio.gz;initramfs.img \
+    ostree-cmdline/cmdline.txt;cmdline.txt \
+    "
+
+# The cmdline.txt generator lives in its own class because `addtask` in a
+# globally inherited class would attach the task to every recipe in the tree.
+# IMAGE_CLASSES is inherited only by image recipes.
+IMAGE_CLASSES += "rpi5-ostree-boot"
 
 # --- Image layout -----------------------------------------------------------
 # Generic: vfat boot partition + ext4 rootfs carrying the OSTree physical

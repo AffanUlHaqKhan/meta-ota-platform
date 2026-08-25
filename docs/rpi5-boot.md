@@ -75,18 +75,65 @@ None of this recovers a kernel that panics on boot. Accept that or revisit D4.
   meta-updater's bogus `bcm2708_fb.*` arguments
 - `sdimage-sota.wks` (vfat boot + ext4 OSTree sysroot; carries no u-boot assumptions)
 
-## What is not built yet
+## How the factory image boots (implemented)
 
-1. **`cmdline.txt` with the right `ostree=` karg in the factory image.** On u-boot boards the
-   bootloader derives this. Here the `.wks` produces a boot partition whose `cmdline.txt` comes
-   from `RPI_CMDLINE`/`bootfiles`, with no `ostree=` in it. Until this is added, the first
-   flashed image will not boot into a deployment. Options: a `do_image_wic:prepend` that writes
-   `cmdline.txt` after reading the deployed checksum, or an initramfs that locates the
-   deployment itself.
-2. **The agent's `none` bootloader backend** — the three steps above.
-3. **A confirm/reject path that means anything.** With no bootcount, "reject" can only mean
+The first build produced an image that could not boot, in three separate ways. All three are
+now handled in `classes/sota_raspberrypi5.bbclass` and `classes/rpi5-ostree-boot.bbclass`:
+
+| Gap | Symptom | Fix |
+|---|---|---|
+| `cmdline.txt` had no `ostree=` karg | initramfs cannot find a deployment | generated per build from OSTree's own boot loader entry |
+| `cmdline.txt` had no `root=` | initramfs cannot mount the sysroot to *look* for one | added to `OSTREE_KERNEL_ARGS` |
+| initramfs neither shipped nor referenced | kernel boots, nothing pivots into the deployment | added to `IMAGE_BOOT_FILES` and to `config.txt` |
+
+### Where the command line comes from
+
+`sysroot.bootloader=none` stops OSTree writing bootloader config, but it still emits a Boot
+Loader Spec entry at `boot/loader/entries/ostree-1.conf` in the OTA sysroot:
+
+```
+options console=ttyAMA10,115200 console=tty1 rootwait root=/dev/mmcblk0p2 rootfstype=ext4 \
+        ostree=/ostree/boot.1/ota-platform/64bb26f5...43ee/0
+linux  /ostree/ota-platform-64bb26f5...43ee/vmlinuz-6.6.63-v8-16k
+initrd /ostree/ota-platform-64bb26f5...43ee/initramfs-6.6.63-v8-16k.img
+```
+
+`do_write_ostree_cmdline` reads that `options` line verbatim into
+`${DEPLOY_DIR_IMAGE}/ostree-cmdline/cmdline.txt`, and `IMAGE_BOOT_FILES` copies it over the
+generic `cmdline.txt` from `rpi-cmdline.bb`. Reading OSTree's own answer beats recomputing the
+deployment path: the checksum changes every build, and OSTree owns the numbering of
+`boot.N`. The task fails loudly if the entry is missing or carries no `ostree=`, so a silently
+unbootable image cannot be produced again.
+
+Ordering is `after do_image_ota before do_image_wic` — the sysroot must exist, and the file
+must be in place before wic populates the FAT partition. The task lives in its own class
+because `addtask` in a globally inherited class attaches to every recipe in the tree;
+`IMAGE_CLASSES` scopes it to images.
+
+### config.txt
+
+`RPI_EXTRA_CONFIG` appends:
+
+```
+kernel=kernel_2712.img
+initramfs initramfs.img followkernel
+```
+
+`followkernel` places the initramfs directly after the kernel in memory. Without these two
+lines the Pi 5 firmware loads a kernel with no initramfs, and the `ostree=` karg has nothing to
+act on.
+
+## What is still not built
+
+1. **The agent's `none` bootloader backend** — the three deploy steps above. The factory image
+   boots; *updates* do not yet re-point the boot partition at a new deployment.
+2. **A confirm/reject path that means anything.** With no bootcount, "reject" can only mean
    "rewrite `cmdline.txt` back to the previous deployment and reboot", and only if userspace
    still runs.
+
+Note the asymmetry the build now hides: `cmdline.txt` is correct at flash time because bitbake
+generated it. Nothing keeps it correct after an update. That is item 1, and until it exists an
+OTA update will deploy successfully and then boot the *old* commit.
 
 Test 3 in `ota-agent`'s testing section (power loss between deploy and confirm) is expected to
 **fail** on this board. That is the accepted trade, not a bug — but verify it fails the way you
