@@ -367,6 +367,8 @@ by deliberately shipping a commit whose HMI unit fails to start.
 | `undefined symbol: _ZTIN6icu_74...MeasureFormatE`, or any link error naming a symbol that obviously exists | OOM truncated object files to 0 bytes. `find <workdir> -name '*.o' -size 0` to confirm. Cap `BB_NUMBER_THREADS`/`PARALLEL_MAKE`, then `bitbake -c cleansstate <recipe>` — a plain retry relinks the same corrupt objects |
 | Random `do_compile` failures in different recipes each run | same cause: memory pressure. See the build-host section of `conf/ota.conf` |
 | `No rule to make target '.../overlays/uart0-rpi4.dtbo'` | meta-updater bug — `sota_raspberrypi.bbclass` names an overlay the RPi kernel no longer ships. Overridden in `conf/ota.conf` |
+| `qtbase-native do_configure` fails with `QT_FEATURE_egl = "OFF"` | a `PACKAGECONFIG:append` reached the native recipe. Graphics options are target-only — use `:class-target` |
+| HMI exits with `no Qt platform plugin could be initialized` | `QT_QPA_PLATFORM` names a plugin that was never built. Check `/usr/lib/plugins/platforms/` on target against `QT_HMI_PLATFORM` |
 | `Layer ... is not compatible with the core layer` | a layer's branch does not match poky's — check `LAYERSERIES_COMPAT` in its `conf/layer.conf` |
 | `LIC_FILES_CHKSUM does not match` | expected on first build — copy the md5 bitbake prints |
 | `unable to connect to git.yoctoproject.org: errno=Connection timed out` | port 9418 blocked — use https and set `url."https://".insteadOf git://` |
