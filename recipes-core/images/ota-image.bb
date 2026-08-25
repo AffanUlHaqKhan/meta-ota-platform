@@ -20,6 +20,7 @@ IMAGE_INSTALL:append = " \
     ostree \
     ostree-boot-sync \
     ota-network-config \
+    ota-rootdirs \
     ca-certificates \
     openssl \
     util-linux \
