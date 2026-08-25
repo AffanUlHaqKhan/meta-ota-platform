@@ -19,6 +19,7 @@ IMAGE_INSTALL:append = " \
     ${@bb.utils.contains('OTA_AGENT_ENABLED', '1', 'ota-agent', '', d)} \
     ostree \
     ostree-boot-sync \
+    ota-network-config \
     ca-certificates \
     openssl \
     util-linux \

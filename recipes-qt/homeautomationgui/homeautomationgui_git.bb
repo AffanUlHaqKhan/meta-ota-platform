@@ -11,6 +11,7 @@ DEPENDS = "qtbase qtdeclarative qtdeclarative-native"
 
 SRC_URI = "git://github.com/AffanUlHaqKhan/HomeAutomationGUI.git;protocol=https;branch=main \
            file://homeautomationgui.service \
+           file://vnc.conf \
            "
 
 # Pin for releases. AUTOREV breaks reproducibility, which breaks small OSTree deltas.
@@ -41,6 +42,7 @@ do_install:append() {
 
 FILES:${PN} += " \
     ${systemd_system_unitdir} \
+    ${datadir}/homeautomationgui \
     ${localstatedir}/lib/homeautomationgui \
     "
 

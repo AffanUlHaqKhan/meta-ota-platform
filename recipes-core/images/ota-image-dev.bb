@@ -11,3 +11,10 @@ IMAGE_INSTALL:append = " \
     curl \
     vim \
     "
+
+# The HMI recipe ships /usr/share/homeautomationgui/vnc.conf. Enable it on a
+# running dev board to view the UI from a laptop with no monitor attached:
+#   mkdir -p /etc/systemd/system/homeautomationgui.service.d
+#   cp /usr/share/homeautomationgui/vnc.conf \
+#      /etc/systemd/system/homeautomationgui.service.d/
+#   systemctl daemon-reload && systemctl restart homeautomationgui
