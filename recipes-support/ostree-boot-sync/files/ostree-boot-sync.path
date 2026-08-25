@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch for new OSTree deployments
+After=boot-firmware.mount
+
+[Path]
+# OSTree rewrites the boot loader entries on every `admin deploy`/`upgrade`.
+# Watching them catches deployments made by anything -- ota-agent, a manual
+# `ostree admin upgrade`, or a technician over ssh.
+PathChanged=/boot/loader/entries
+Unit=ostree-boot-sync.service
+
+[Install]
+WantedBy=multi-user.target

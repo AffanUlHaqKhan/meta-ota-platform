@@ -1,0 +1,17 @@
+[Unit]
+Description=Point the Pi firmware boot partition at the current OSTree deployment
+Documentation=file:///usr/share/doc/ostree-boot-sync/README
+RequiresMountsFor=/boot/firmware
+After=boot-firmware.mount
+# Runs at boot to repair drift (e.g. a deploy that was interrupted before sync),
+# and is triggered by ostree-boot-sync.path whenever OSTree writes a new entry.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ostree-boot-sync
+RemainAfterExit=no
+# A failure here means the next boot uses the previous deployment, which is the
+# safe direction. Do not mask it -- the agent reads the exit status.
+
+[Install]
+WantedBy=multi-user.target

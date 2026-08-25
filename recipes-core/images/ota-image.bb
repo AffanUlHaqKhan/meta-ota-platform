@@ -18,6 +18,7 @@ IMAGE_INSTALL:append = " \
     homeautomationgui \
     ${@bb.utils.contains('OTA_AGENT_ENABLED', '1', 'ota-agent', '', d)} \
     ostree \
+    ostree-boot-sync \
     ca-certificates \
     openssl \
     util-linux \

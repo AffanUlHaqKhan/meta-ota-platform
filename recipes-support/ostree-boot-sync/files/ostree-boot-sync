@@ -1,0 +1,96 @@
+#!/bin/sh
+# Sync the Raspberry Pi firmware boot partition with the current OSTree deployment.
+#
+# Why this exists: the Pi 5 has no u-boot, so OSTree runs with
+# sysroot.bootloader=none. It still deploys correctly and still writes a Boot
+# Loader Spec entry, but nothing acts on that entry -- the Pi firmware reads
+# kernel/initramfs/cmdline.txt from the vfat partition and knows nothing about
+# OSTree. Without this script an update deploys and then reboots into the OLD
+# commit, silently.
+#
+# Run after every `ostree admin deploy`/`upgrade` and at boot (to repair drift).
+# Idempotent: re-running with nothing changed is a no-op.
+set -eu
+
+BOOTFW="${BOOTFW:-/boot/firmware}"        # vfat partition the firmware reads
+ENTRIES="${ENTRIES:-/boot/loader/entries}" # OSTree BLS entries (ext4 sysroot)
+KERNEL_NAME="${KERNEL_NAME:-kernel_2712.img}"
+INITRD_NAME="${INITRD_NAME:-initramfs.img}"
+
+log() { echo "ostree-boot-sync: $*"; }
+die() { echo "ostree-boot-sync: ERROR: $*" >&2; exit 1; }
+
+[ -d "$BOOTFW" ] || die "$BOOTFW does not exist"
+mountpoint -q "$BOOTFW" || die "$BOOTFW is not a mount point (boot-firmware.mount not active?)"
+[ -d "$ENTRIES" ] || die "$ENTRIES missing -- is this an OSTree system?"
+
+# OSTree writes one entry per deployment. The default (next to boot) sorts
+# first; `sort -V` keeps ostree-2.conf from beating ostree-10.conf.
+ENTRY=$(ls "$ENTRIES"/ostree-*.conf 2>/dev/null | sort -V | head -1) \
+    || die "no BLS entries in $ENTRIES"
+[ -n "$ENTRY" ] || die "no BLS entries in $ENTRIES"
+log "using entry $ENTRY"
+
+# BLS paths are relative to the sysroot's /boot.
+LINUX=$(awk '/^linux[ \t]/  {print $2; exit}' "$ENTRY")
+INITRD=$(awk '/^initrd[ \t]/ {print $2; exit}' "$ENTRY")
+OPTIONS=$(sed -n 's/^options[ \t]\+//p' "$ENTRY" | head -1)
+
+[ -n "$LINUX" ]   || die "no 'linux' line in $ENTRY"
+[ -n "$OPTIONS" ] || die "no 'options' line in $ENTRY"
+case "$OPTIONS" in
+    *ostree=*) : ;;
+    *) die "entry $ENTRY has no ostree= karg; refusing to write an unbootable cmdline.txt" ;;
+esac
+
+SRC_KERNEL="/boot${LINUX}"
+SRC_INITRD="/boot${INITRD}"
+[ -f "$SRC_KERNEL" ] || die "kernel $SRC_KERNEL missing"
+[ -n "$INITRD" ] && [ ! -f "$SRC_INITRD" ] && die "initrd $SRC_INITRD missing"
+
+# Nothing to do? Compare the command line -- it embeds the deployment checksum,
+# so it changes whenever the deployment does.
+if [ -f "$BOOTFW/cmdline.txt" ] &&
+   [ "$(cat "$BOOTFW/cmdline.txt")" = "$OPTIONS" ] &&
+   cmp -s "$SRC_KERNEL" "$BOOTFW/$KERNEL_NAME"; then
+    log "already in sync"
+    exit 0
+fi
+
+# Space check before touching anything: vfat has no atomic replace, so a
+# half-written kernel is a brick.
+NEED=$(( $(stat -c %s "$SRC_KERNEL") + $(stat -c %s "$SRC_INITRD" 2>/dev/null || echo 0) ))
+FREE=$(( $(stat -f -c '%a*%S' "$BOOTFW" | tr '*' ' ' | awk '{print $1*$2}') ))
+[ "$FREE" -gt "$NEED" ] || die "not enough space in $BOOTFW: need $NEED, have $FREE"
+
+# Keep the outgoing kernel and command line so a technician has a manual way back.
+[ -f "$BOOTFW/$KERNEL_NAME" ] && cp -f "$BOOTFW/$KERNEL_NAME" "$BOOTFW/kernel_prev.img"
+[ -f "$BOOTFW/$INITRD_NAME" ] && cp -f "$BOOTFW/$INITRD_NAME" "$BOOTFW/initramfs_prev.img"
+[ -f "$BOOTFW/cmdline.txt" ]  && cp -f "$BOOTFW/cmdline.txt"  "$BOOTFW/cmdline.txt.bak"
+sync -f "$BOOTFW"
+
+# Write to temporary names first, then rename. Renaming is not atomic on vfat,
+# but it is far shorter than a multi-megabyte write, so the exposure window is
+# much smaller.
+log "copying kernel $LINUX"
+cp -f "$SRC_KERNEL" "$BOOTFW/.$KERNEL_NAME.new"
+if [ -n "$INITRD" ]; then
+    log "copying initrd $INITRD"
+    cp -f "$SRC_INITRD" "$BOOTFW/.$INITRD_NAME.new"
+fi
+sync -f "$BOOTFW"
+
+mv -f "$BOOTFW/.$KERNEL_NAME.new" "$BOOTFW/$KERNEL_NAME"
+[ -n "$INITRD" ] && mv -f "$BOOTFW/.$INITRD_NAME.new" "$BOOTFW/$INITRD_NAME"
+sync -f "$BOOTFW"
+
+# cmdline.txt LAST: until it points at the new deployment, the old one still
+# boots, and the old kernel is still in place. This ordering is the only
+# rollback protection this board has.
+log "writing cmdline: $OPTIONS"
+printf '%s\n' "$OPTIONS" > "$BOOTFW/.cmdline.txt.new"
+sync -f "$BOOTFW"
+mv -f "$BOOTFW/.cmdline.txt.new" "$BOOTFW/cmdline.txt"
+sync -f "$BOOTFW"
+
+log "boot partition now points at the current deployment"

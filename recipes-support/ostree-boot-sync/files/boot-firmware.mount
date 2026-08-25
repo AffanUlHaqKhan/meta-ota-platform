@@ -1,0 +1,17 @@
+[Unit]
+Description=Raspberry Pi firmware boot partition (vfat)
+# The partition the Pi 5 EEPROM bootloader reads. OSTree writes its kernels and
+# boot loader entries to /boot on the ext4 sysroot instead, so nothing mounts
+# this by default -- ostree-boot-sync needs it to bridge the two.
+DefaultDependencies=no
+Before=local-fs.target
+After=systemd-fsck@dev-disk-by\x2dlabel-boot.service
+
+[Mount]
+What=/dev/disk/by-label/boot
+Where=/boot/firmware
+Type=vfat
+Options=rw,noatime,fmask=0077,dmask=0077,noexec,nodev,nosuid
+
+[Install]
+WantedBy=local-fs.target

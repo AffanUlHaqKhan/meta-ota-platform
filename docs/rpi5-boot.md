@@ -123,17 +123,94 @@ initramfs initramfs.img followkernel
 lines the Pi 5 firmware loads a kernel with no initramfs, and the `ostree=` karg has nothing to
 act on.
 
+## How updates work (implemented)
+
+The factory image boots because bitbake generated `cmdline.txt`. Nothing kept it correct
+afterwards, so an update used to deploy successfully and then reboot into the **old** commit,
+silently. `ostree-boot-sync` closes that.
+
+### The gap it bridges
+
+```
+partition 1  vfat   <- the Pi 5 EEPROM firmware reads kernel/initramfs/cmdline.txt from here
+partition 2  ext4   <- OSTree writes /boot/ostree/<os>-<csum>/vmlinuz and
+                       /boot/loader/entries/ostree-N.conf here
+```
+
+Nothing connects them. The deployment's stock `/etc/fstab` does not even mount partition 1, so
+on a running system the firmware's partition is invisible.
+
+`boot-firmware.mount` mounts it at `/boot/firmware` by label, and `ostree-boot-sync` copies the
+deployed kernel and initramfs across and rewrites `cmdline.txt` from the BLS entry.
+
+### Triggering
+
+| Unit | When |
+|---|---|
+| `ostree-boot-sync.path` | `PathChanged=/boot/loader/entries` — fires whenever OSTree writes a deployment, from `ota-agent`, a manual `ostree admin upgrade`, or a technician over ssh |
+| `ostree-boot-sync.service` | also at boot, to repair drift from a deploy interrupted before it synced |
+
+Watching the entries rather than hooking the agent is deliberate: OSTree has no post-deploy
+hook, and any path that deploys must not be able to skip the sync.
+
+### The `ostree=` path is keyed on the kernel, not the commit
+
+Measured across two builds whose rootfs differed (one added `ostree-boot-sync`):
+
+```
+commit checksum   96c1ca2c...  <- changed
+ostree= karg      /ostree/boot.1/ota-platform/64bb26f5.../0   <- did NOT change
+```
+
+`64bb26f5...` is the **bootcsum**, a hash of the kernel and initramfs, not of the rootfs
+commit. `/ostree/boot.1/<osname>/<bootcsum>/0` is a directory OSTree itself re-points at the
+current deployment.
+
+The consequence is worth designing around: **an update that does not change the kernel needs no
+write to the boot partition at all.** Same kernel, same initramfs, same command line — OSTree's
+own symlink does the work, and `ostree-boot-sync` correctly exits early as "already in sync".
+
+So the risky path — multi-megabyte writes to a vfat partition with no atomic replace — is taken
+only when the kernel changes. Application-only updates, which is most of them, never touch it.
+Keep kernel changes to deliberate, separately tested releases and this board's weak rollback
+story matters far less in practice.
+
+### Write ordering is the only safety net on this board
+
+```
+1. back up outgoing kernel/initramfs/cmdline  ->  kernel_prev.img, cmdline.txt.bak
+2. check free space BEFORE writing anything   (vfat has no atomic replace)
+3. copy kernel + initrd to .name.new, sync, rename, sync
+4. write cmdline.txt LAST, sync
+```
+
+Until step 4 lands, `cmdline.txt` still names the previous deployment **and** the previous
+kernel is still in place, so an interruption anywhere in steps 1–3 leaves a bootable system on
+the old commit. Reversing steps 3 and 4 would produce a brick. Do not "optimise" this order.
+
+The script refuses to write a `cmdline.txt` without an `ostree=` karg, and is idempotent — it
+compares the stored command line (which embeds the deployment checksum) and exits early when
+already in sync.
+
 ## What is still not built
 
-1. **The agent's `none` bootloader backend** — the three deploy steps above. The factory image
-   boots; *updates* do not yet re-point the boot partition at a new deployment.
-2. **A confirm/reject path that means anything.** With no bootcount, "reject" can only mean
-   "rewrite `cmdline.txt` back to the previous deployment and reboot", and only if userspace
-   still runs.
+1. **A confirm/reject path.** With no bootcount, "reject" can only mean "restore
+   `cmdline.txt.bak` and `kernel_prev.img`, then reboot" — and only while userspace still runs.
+   `ostree-boot-sync` leaves those backups precisely so that path can be written.
+2. **`ota-agent` itself**, which is what would decide *when* to reject.
 
-Note the asymmetry the build now hides: `cmdline.txt` is correct at flash time because bitbake
-generated it. Nothing keeps it correct after an update. That is item 1, and until it exists an
-OTA update will deploy successfully and then boot the *old* commit.
+## Untested
+
+`ostree-boot-sync` has not run on hardware. It is written defensively — dies rather than writes
+on every unexpected condition — but the first real test is a Pi 5 doing an actual
+`ostree admin upgrade`. Verify in this order:
+
+```bash
+systemctl status boot-firmware.mount          # is partition 1 mounted?
+ostree-boot-sync                              # run by hand, read the log
+ostree admin status                           # what does OSTree think is default?
+cat /boot/firmware/cmdline.txt                # does the ostree= checksum match?
+```
 
 Test 3 in `ota-agent`'s testing section (power loss between deploy and confirm) is expected to
 **fail** on this board. That is the accepted trade, not a bug — but verify it fails the way you
