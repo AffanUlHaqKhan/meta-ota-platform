@@ -30,9 +30,17 @@ IMAGE_INSTALL:append = " \
 # Qt 6 runtime for the HMI. HomeAuto links Quick, Gui, Qml and QuickControls2 —
 # in Qt 6 all four live in qtbase + qtdeclarative. It draws its icons and charts
 # with QML Canvas, so no qtsvg and no qtcharts.
+#
+# Fonts are not pulled in by qtbase: it RDEPENDS on the fontconfig *library*
+# through shlibs, but nothing depends on font files, so core-image-minimal has
+# none at all (no /usr/share/fonts) and every glyph renders as an empty box.
 IMAGE_INSTALL:append = " \
     qtbase \
     qtdeclarative \
+    ttf-dejavu-sans \
+    ttf-dejavu-sans-mono \
     "
 
+# 4 GB floor (KiB) -- see meta-ota-platform-rpi4 for the reasoning; same bug.
+IMAGE_ROOTFS_SIZE = "4194304"
 IMAGE_ROOTFS_EXTRA_SPACE = "524288"
